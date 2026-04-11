@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Library Login</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-stone-100 text-stone-900">
+    <main class="mx-auto flex min-h-screen w-full max-w-5xl items-center px-4 py-8 sm:px-6 lg:px-8">
+        <section class="grid w-full gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(20rem,26rem)]">
+            <div class="overflow-hidden rounded-3xl bg-gradient-to-br from-amber-200 via-orange-100 to-white p-8 shadow-sm ring-1 ring-stone-200 sm:p-10">
+                <p class="text-sm font-semibold uppercase tracking-[0.2em] text-stone-600">Home Library</p>
+                <h1 class="mt-4 text-4xl font-bold tracking-tight text-stone-900 sm:text-5xl">Private Catalogue Access</h1>
+                <p class="mt-4 max-w-2xl text-sm leading-7 text-stone-700 sm:text-base">
+                    Enter your library password to open the scanner and browse your saved books from your phone or desktop.
+                </p>
+                <div class="mt-8 grid gap-4 sm:grid-cols-2">
+                    <div class="rounded-2xl bg-white/70 p-4 ring-1 ring-white/80">
+                        <p class="text-xs font-semibold uppercase tracking-[0.2em] text-stone-500">Protected</p>
+                        <p class="mt-2 text-sm leading-6 text-stone-700">All catalogue pages and API routes are behind the same shared password.</p>
+                    </div>
+                    <div class="rounded-2xl bg-white/70 p-4 ring-1 ring-white/80">
+                        <p class="text-xs font-semibold uppercase tracking-[0.2em] text-stone-500">Mobile Ready</p>
+                        <p class="mt-2 text-sm leading-6 text-stone-700">Once signed in, your phone can use its own camera directly over HTTPS.</p>
+                    </div>
+                </div>
+            </div>
+
+            <section class="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-stone-200 sm:p-8">
+                <h2 class="text-2xl font-semibold tracking-tight text-stone-900">Sign In</h2>
+                <p class="mt-2 text-sm leading-6 text-stone-600">
+                    Use the shared password configured in your deployment environment.
+                </p>
+
+                {% if error_message %}
+                <div class="mt-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                    {{ error_message }}
+                </div>
+                {% endif %}
+
+                <form method="post" class="mt-6 space-y-4">
+                    <input type="hidden" name="next" value="{{ next_url }}">
+
+                    <div>
+                        <label for="password" class="block text-sm font-medium text-stone-800">Password</label>
+                        <input
+                            id="password"
+                            name="password"
+                            type="password"
+                            required
+                            autofocus
+                            class="mt-2 w-full rounded-2xl border border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-900 outline-none transition focus:border-amber-400 focus:bg-white focus:ring-2 focus:ring-amber-200"
+                        >
+                    </div>
+
+                    <button
+                        type="submit"
+                        class="inline-flex w-full items-center justify-center rounded-2xl bg-stone-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-stone-800"
+                    >
+                        Unlock Library
+                    </button>
+                </form>
+            </section>
+        </section>
+    </main>
+</body>
+</html>
