@@ -1,6 +1,6 @@
 # Home Library Manager
 
-A mobile-friendly Flask app for cataloguing books in a home library with SQLite storage, ISBN scanning, automatic metadata lookup from Open Library, shared-password protection, author progress tracking, and backup import/export tools.
+A mobile-friendly Flask app for cataloguing books in a home library with SQLite storage, ISBN scanning, automatic metadata lookup from Open Library, separate user accounts, author progress tracking, and backup import/export tools.
 
 ## Local development
 
@@ -17,7 +17,7 @@ A mobile-friendly Flask app for cataloguing books in a home library with SQLite 
    pip install -r requirements.txt
    ```
 
-3. Copy the example environment file and set your local password and secret:
+3. Copy the example environment file and set your local admin credentials and secret:
 
    ```powershell
    Copy-Item .env.example .env
@@ -26,7 +26,8 @@ A mobile-friendly Flask app for cataloguing books in a home library with SQLite 
 4. Edit `.env` and set:
 
    ```text
-   APP_PASSWORD=your-password
+   DEFAULT_ADMIN_USERNAME=owner
+   DEFAULT_ADMIN_PASSWORD=your-password
    SECRET_KEY=your-long-random-secret
    ```
 
@@ -42,35 +43,45 @@ A mobile-friendly Flask app for cataloguing books in a home library with SQLite 
    python app.py
    ```
 
-7. Open `http://127.0.0.1:5000` and sign in with your password.
+7. Open `http://127.0.0.1:5000` and sign in with your username and password.
 
 ## Features
 
 - Scan books by barcode or manual ISBN entry.
+- Keep separate libraries for multiple users on the same deployment.
 - Search, filter, and sort your catalogue on the page.
 - Edit book details, toggle the `Stamped` flag, and delete books.
 - Track author progress for Mick Herron, C.J. Box, and Bernard Cornwell.
 - Export the library to JSON or CSV and restore JSON backups.
+- Create additional user accounts from the admin dashboard.
 - Re-seed the stored author progress targets with:
 
   ```powershell
   python sync_author_targets.py
   ```
 
-## Password protection
+## Accounts and authentication
 
-The app is now protected by a single shared password. All catalogue pages and API routes require authentication, while `/healthz` remains public for hosting health checks.
+The app now supports separate user accounts. Each account gets its own books, author progress data, and backup imports/exports. All catalogue pages and API routes still require authentication, while `/healthz` remains public for hosting health checks.
 
 Required environment variables:
 
-- `APP_PASSWORD`: the shared password used on the login page.
+- `DEFAULT_ADMIN_PASSWORD`: the password for the initial owner account.
 - `SECRET_KEY`: a long random secret used to sign the session cookie.
+
+Optional:
+
+- `DEFAULT_ADMIN_USERNAME`: defaults to `owner`.
+- `DEFAULT_ADMIN_DISPLAY_NAME`: defaults to a title-cased version of the username.
+- `APP_PASSWORD`: still works as a legacy fallback bootstrap password if `DEFAULT_ADMIN_PASSWORD` is not set.
 
 Recommended:
 
-- Use a long, unique password.
+- Use a long, unique admin password.
 - Use a long random `SECRET_KEY`.
 - Keep `SESSION_COOKIE_SECURE=1` in hosted environments so cookies are only sent over HTTPS.
+
+If you are upgrading an existing single-password deployment, the app migrates the existing shared library into the owner account automatically on startup.
 
 ## Production entrypoint
 
@@ -93,7 +104,10 @@ The default worker count is `1` because SQLite is safest with a single app insta
 
 The app resolves runtime settings from environment variables, optionally loaded from a local `.env` file:
 
-- `APP_PASSWORD`: required login password.
+- `DEFAULT_ADMIN_USERNAME`: initial owner username. Defaults to `owner`.
+- `DEFAULT_ADMIN_DISPLAY_NAME`: initial owner display name.
+- `DEFAULT_ADMIN_PASSWORD`: initial owner password.
+- `APP_PASSWORD`: legacy fallback for bootstrapping the first owner account.
 - `SECRET_KEY`: required session signing secret.
 - `DATABASE_PATH`: explicit full path to the SQLite file.
 - `RAILWAY_VOLUME_MOUNT_PATH`: if present and `DATABASE_PATH` is not set, the app uses `<mount>/library.db`.
@@ -125,7 +139,7 @@ This repo includes [render.yaml](/C:/Users/incan/OneDrive/Documents/CODEX/Librar
 
 Before your first deploy, add these environment variables in Render:
 
-- `APP_PASSWORD`
+- `DEFAULT_ADMIN_PASSWORD`
 - `SECRET_KEY`
 
 Deploy steps:
@@ -133,7 +147,7 @@ Deploy steps:
 1. Push this repo to GitHub.
 2. In Render, create a new Blueprint service from the repo.
 3. Keep the attached disk enabled.
-4. Set `APP_PASSWORD` and `SECRET_KEY` in the Render dashboard.
+4. Set `DEFAULT_ADMIN_PASSWORD` and `SECRET_KEY` in the Render dashboard.
 5. Use at least the `starter` plan, because persistent disks are required for SQLite persistence.
 
 ## Railway
@@ -142,7 +156,7 @@ This repo includes [railway.toml](/C:/Users/incan/OneDrive/Documents/CODEX/Libra
 
 Before your first deploy, add these environment variables in Railway:
 
-- `APP_PASSWORD`
+- `DEFAULT_ADMIN_PASSWORD`
 - `SECRET_KEY`
 
 Deploy steps:
@@ -150,7 +164,7 @@ Deploy steps:
 1. Push this repo to GitHub.
 2. Create a new Railway project from the repo.
 3. Add a Volume and mount it to your service, for example at `/data`.
-4. Set `APP_PASSWORD` and `SECRET_KEY` in the Railway variables panel.
+4. Set `DEFAULT_ADMIN_PASSWORD` and `SECRET_KEY` in the Railway variables panel.
 5. Redeploy.
 
 When Railway provides `RAILWAY_VOLUME_MOUNT_PATH`, the app automatically stores the database at `<mount>/library.db`. If you prefer, you can set `DATABASE_PATH` manually instead.
@@ -161,7 +175,9 @@ This app uses SQLite, so keep it on a single running instance. Persistent disks 
 
 ## App behavior
 
-- The `books` table stores `title`, `author`, `isbn`, `cover_image_url`, and `stamped`.
+- The `users` table stores account credentials and admin access.
+- The `books` table stores `title`, `author`, `isbn`, `cover_image_url`, and `stamped`, scoped per user.
+- The `author_targets` table is stored per user so progress and restores stay separate.
 - Scanned or manually entered ISBNs are posted to `/api/books/scan`.
 - The backend looks up book metadata using the Open Library Books API and stores it in SQLite.
 - The frontend uses `html5-qrcode` from `https://unpkg.com/html5-qrcode`.

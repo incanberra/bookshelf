@@ -1,6 +1,5 @@
 import csv
 from datetime import datetime, timezone
-import hmac
 import io
 import json
 import os
@@ -9,12 +8,23 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-from flask import Flask, Response, redirect, render_template, request, session, url_for
+from flask import Flask, Response, g, redirect, render_template, request, session, url_for
 
-from init_db import initialize_database, seed_author_targets
+from auth_utils import verify_password
+from init_db import (
+    clean_text,
+    create_connection,
+    create_user,
+    fetch_user_by_id,
+    fetch_user_by_username,
+    initialize_database,
+    normalize_username,
+    seed_author_targets,
+    update_user_last_login,
+)
 from settings import (
-    APP_PASSWORD,
     DATABASE_PATH,
+    DEFAULT_ADMIN_USERNAME,
     FLASK_DEBUG,
     HOST,
     OPEN_LIBRARY_BOOKS_API,
@@ -23,9 +33,6 @@ from settings import (
     SESSION_COOKIE_SECURE,
 )
 
-
-if not APP_PASSWORD:
-    raise RuntimeError("APP_PASSWORD must be set before starting the app.")
 
 if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY must be set before starting the app.")
@@ -39,11 +46,9 @@ app.config.update(
     SESSION_COOKIE_SECURE=SESSION_COOKIE_SECURE,
 )
 
-# Ensure the configured database path and seeded author progress targets exist.
 initialize_database()
 
 EXEMPT_ENDPOINTS = {"healthcheck", "login", "logout", "static"}
-BOOK_FIELDS = ("id", "title", "author", "isbn", "cover_image_url", "stamped")
 
 
 def utc_now_iso() -> str:
@@ -52,6 +57,10 @@ def utc_now_iso() -> str:
 
 def is_safe_redirect_target(target: str | None) -> bool:
     return bool(target) and target.startswith("/") and not target.startswith("//")
+
+
+def get_db_connection() -> sqlite3.Connection:
+    return create_connection(DATABASE_PATH)
 
 
 def authentication_required_response():
@@ -64,23 +73,55 @@ def authentication_required_response():
 
 @app.before_request
 def require_authentication():
+    g.current_user = None
+
     if request.endpoint is None or request.endpoint in EXEMPT_ENDPOINTS:
         return None
 
-    if session.get("authenticated") is True:
+    user_id = session.get("user_id")
+    if not user_id:
+        return authentication_required_response()
+
+    with get_db_connection() as connection:
+        user = fetch_user_by_id(connection, int(user_id))
+
+    if user is None:
+        session.clear()
+        return authentication_required_response()
+
+    g.current_user = user
+    return None
+
+
+def admin_required_response():
+    return {"error": "Admin access is required for that action."}, 403
+
+
+def serialize_current_user(user: sqlite3.Row | dict | None) -> dict | None:
+    if user is None:
         return None
 
-    return authentication_required_response()
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "display_name": user["display_name"],
+        "is_admin": bool(user["is_admin"]),
+        "created_at": user["created_at"],
+        "last_login_at": user["last_login_at"],
+    }
 
 
-def get_db_connection() -> sqlite3.Connection:
-    connection = sqlite3.connect(DATABASE_PATH)
-    connection.row_factory = sqlite3.Row
-    return connection
-
-
-def clean_text(value: object | None) -> str:
-    return " ".join(str(value or "").strip().split())
+def serialize_user_summary(user: sqlite3.Row | dict) -> dict:
+    user_keys = user.keys() if hasattr(user, "keys") else user
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "display_name": user["display_name"],
+        "is_admin": bool(user["is_admin"]),
+        "book_count": int(user["book_count"]) if "book_count" in user_keys else 0,
+        "created_at": user["created_at"],
+        "last_login_at": user["last_login_at"],
+    }
 
 
 def normalize_isbn(raw_isbn: object | None) -> str:
@@ -133,6 +174,8 @@ def serialize_book(book: sqlite3.Row | dict) -> dict:
         "isbn": book["isbn"],
         "cover_image_url": book["cover_image_url"],
         "stamped": bool(book["stamped"]),
+        "created_at": book["created_at"],
+        "updated_at": book["updated_at"],
     }
 
 
@@ -154,7 +197,7 @@ def author_matches(book_author: str, aliases: list[str]) -> bool:
     return any(normalize_lookup_text(alias) in normalized_author for alias in aliases)
 
 
-def load_books() -> tuple[list[sqlite3.Row], bool]:
+def load_books(user_id: int) -> tuple[list[sqlite3.Row], bool]:
     if not DATABASE_PATH.exists():
         return [], False
 
@@ -162,31 +205,57 @@ def load_books() -> tuple[list[sqlite3.Row], bool]:
         with get_db_connection() as connection:
             books = connection.execute(
                 """
-                SELECT id, title, author, isbn, cover_image_url, stamped
+                SELECT id, user_id, title, author, isbn, cover_image_url, stamped, created_at, updated_at
                 FROM books
+                WHERE user_id = ?
                 ORDER BY title COLLATE NOCASE ASC
-                """
+                """,
+                (user_id,),
             ).fetchall()
         return books, True
     except sqlite3.OperationalError:
         return [], False
 
 
-def load_author_targets() -> list[sqlite3.Row]:
+def load_author_targets(user_id: int) -> list[sqlite3.Row]:
     with get_db_connection() as connection:
         return connection.execute(
             """
-            SELECT author_name, author_key, total_books, aliases_json, sort_order, source_url, updated_at
+            SELECT user_id, author_name, author_key, total_books, aliases_json, sort_order, source_url, updated_at
             FROM author_targets
+            WHERE user_id = ?
             ORDER BY sort_order ASC, author_name COLLATE NOCASE ASC
-            """
+            """,
+            (user_id,),
         ).fetchall()
 
 
-def build_author_progress(books: list[dict]) -> list[dict]:
+def load_user_summaries() -> list[dict]:
+    with get_db_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                users.id,
+                users.username,
+                users.display_name,
+                users.is_admin,
+                users.created_at,
+                users.last_login_at,
+                COUNT(books.id) AS book_count
+            FROM users
+            LEFT JOIN books ON books.user_id = users.id
+            GROUP BY users.id
+            ORDER BY users.display_name COLLATE NOCASE ASC, users.username COLLATE NOCASE ASC
+            """
+        ).fetchall()
+
+    return [serialize_user_summary(row) for row in rows]
+
+
+def build_author_progress(user_id: int, books: list[dict]) -> list[dict]:
     progress_rows = []
 
-    for author_target in load_author_targets():
+    for author_target in load_author_targets(user_id):
         serialized_target = serialize_author_target(author_target)
         aliases = serialized_target["aliases"] or [serialized_target["author_name"]]
         owned_books = sum(1 for book in books if author_matches(book["author"], aliases))
@@ -207,14 +276,21 @@ def build_author_progress(books: list[dict]) -> list[dict]:
     return progress_rows
 
 
-def build_library_payload() -> dict:
-    book_rows, database_ready = load_books()
+def build_library_payload(user: sqlite3.Row | dict) -> dict:
+    user_id = int(user["id"])
+    book_rows, database_ready = load_books(user_id)
     books = [serialize_book(book) for book in book_rows]
-    return {
+    payload = {
         "database_ready": database_ready,
         "books": books,
-        "author_progress": build_author_progress(books),
+        "author_progress": build_author_progress(user_id, books),
+        "current_user": serialize_current_user(user),
     }
+
+    if bool(user["is_admin"]):
+        payload["users"] = load_user_summaries()
+
+    return payload
 
 
 def prepare_book_fields(
@@ -260,78 +336,90 @@ def prepare_book_fields(
     }
 
 
-def fetch_book_by_id(connection: sqlite3.Connection, book_id: int) -> sqlite3.Row | None:
+def fetch_book_by_id(connection: sqlite3.Connection, user_id: int, book_id: int) -> sqlite3.Row | None:
     return connection.execute(
         """
-        SELECT id, title, author, isbn, cover_image_url, stamped
+        SELECT id, user_id, title, author, isbn, cover_image_url, stamped, created_at, updated_at
         FROM books
-        WHERE id = ?
+        WHERE id = ? AND user_id = ?
         """,
-        (book_id,),
+        (book_id, user_id),
     ).fetchone()
 
 
-def fetch_book_by_isbn(connection: sqlite3.Connection, isbn: str) -> sqlite3.Row | None:
+def fetch_book_by_isbn(connection: sqlite3.Connection, user_id: int, isbn: str) -> sqlite3.Row | None:
     return connection.execute(
         """
-        SELECT id, title, author, isbn, cover_image_url, stamped
+        SELECT id, user_id, title, author, isbn, cover_image_url, stamped, created_at, updated_at
         FROM books
-        WHERE isbn = ?
+        WHERE isbn = ? AND user_id = ?
         """,
-        (isbn,),
+        (isbn, user_id),
     ).fetchone()
 
 
 def upsert_book_record(
     connection: sqlite3.Connection,
+    user_id: int,
     raw_book: dict,
     *,
     preserve_existing_stamped: bool = False,
 ) -> tuple[sqlite3.Row, bool]:
-    existing_book = fetch_book_by_isbn(connection, normalize_isbn(raw_book.get("isbn")))
+    existing_book = fetch_book_by_isbn(connection, user_id, normalize_isbn(raw_book.get("isbn")))
     prepared_book = prepare_book_fields(
         raw_book,
         existing_book,
         preserve_existing_stamped=preserve_existing_stamped,
     )
+    now = utc_now_iso()
 
     if existing_book:
         connection.execute(
             """
             UPDATE books
-            SET title = ?, author = ?, cover_image_url = ?, stamped = ?
-            WHERE id = ?
+            SET title = ?, author = ?, cover_image_url = ?, stamped = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
             """,
             (
                 prepared_book["title"],
                 prepared_book["author"],
                 prepared_book["cover_image_url"],
                 prepared_book["stamped"],
+                now,
                 existing_book["id"],
+                user_id,
             ),
         )
-        saved_book = fetch_book_by_id(connection, existing_book["id"])
+        saved_book = fetch_book_by_id(connection, user_id, existing_book["id"])
         return saved_book, False
 
     cursor = connection.execute(
         """
-        INSERT INTO books (title, author, isbn, cover_image_url, stamped)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO books (user_id, title, author, isbn, cover_image_url, stamped, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            user_id,
             prepared_book["title"],
             prepared_book["author"],
             prepared_book["isbn"],
             prepared_book["cover_image_url"],
             prepared_book["stamped"],
+            now,
+            now,
         ),
     )
-    saved_book = fetch_book_by_id(connection, cursor.lastrowid)
+    saved_book = fetch_book_by_id(connection, user_id, cursor.lastrowid)
     return saved_book, True
 
 
-def update_book_record(connection: sqlite3.Connection, book_id: int, raw_updates: dict) -> sqlite3.Row:
-    existing_book = fetch_book_by_id(connection, book_id)
+def update_book_record(
+    connection: sqlite3.Connection,
+    user_id: int,
+    book_id: int,
+    raw_updates: dict,
+) -> sqlite3.Row:
+    existing_book = fetch_book_by_id(connection, user_id, book_id)
     if existing_book is None:
         raise LookupError("Book not found.")
 
@@ -339,8 +427,8 @@ def update_book_record(connection: sqlite3.Connection, book_id: int, raw_updates
     connection.execute(
         """
         UPDATE books
-        SET title = ?, author = ?, isbn = ?, cover_image_url = ?, stamped = ?
-        WHERE id = ?
+        SET title = ?, author = ?, isbn = ?, cover_image_url = ?, stamped = ?, updated_at = ?
+        WHERE id = ? AND user_id = ?
         """,
         (
             prepared_book["title"],
@@ -348,14 +436,19 @@ def update_book_record(connection: sqlite3.Connection, book_id: int, raw_updates
             prepared_book["isbn"],
             prepared_book["cover_image_url"],
             prepared_book["stamped"],
+            utc_now_iso(),
             book_id,
+            user_id,
         ),
     )
-    return fetch_book_by_id(connection, book_id)
+    return fetch_book_by_id(connection, user_id, book_id)
 
 
-def delete_book_record(connection: sqlite3.Connection, book_id: int) -> bool:
-    cursor = connection.execute("DELETE FROM books WHERE id = ?", (book_id,))
+def delete_book_record(connection: sqlite3.Connection, user_id: int, book_id: int) -> bool:
+    cursor = connection.execute(
+        "DELETE FROM books WHERE id = ? AND user_id = ?",
+        (book_id, user_id),
+    )
     return cursor.rowcount > 0
 
 
@@ -382,11 +475,7 @@ def fetch_book_from_open_library(isbn: str) -> dict | None:
         if author.get("name")
     )
     cover_data = book_data.get("cover") or {}
-    cover_image_url = (
-        cover_data.get("large")
-        or cover_data.get("medium")
-        or cover_data.get("small")
-    )
+    cover_image_url = cover_data.get("large") or cover_data.get("medium") or cover_data.get("small")
 
     return {
         "title": book_data["title"].strip(),
@@ -458,15 +547,20 @@ def parse_books_from_import(import_payload: object) -> list[dict]:
     return parsed_books
 
 
-def export_library_json_response() -> Response:
-    payload = build_library_payload()
+def export_library_json_response(user: sqlite3.Row | dict) -> Response:
+    payload = build_library_payload(user)
     payload.update(
         {
             "exported_at": utc_now_iso(),
-            "version": 2,
-            "author_targets": [serialize_author_target(target) for target in load_author_targets()],
+            "version": 3,
+            "account": serialize_current_user(user),
+            "author_targets": [
+                serialize_author_target(target)
+                for target in load_author_targets(int(user["id"]))
+            ],
         }
     )
+    payload.pop("users", None)
 
     response = Response(
         json.dumps(payload, indent=2, ensure_ascii=False),
@@ -476,8 +570,8 @@ def export_library_json_response() -> Response:
     return response
 
 
-def export_library_csv_response() -> Response:
-    payload = build_library_payload()
+def export_library_csv_response(user: sqlite3.Row | dict) -> Response:
+    payload = build_library_payload(user)
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer,
@@ -507,7 +601,7 @@ def healthcheck():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if session.get("authenticated") is True:
+    if session.get("user_id"):
         return redirect(url_for("index"))
 
     next_target = request.args.get("next") or request.form.get("next") or url_for("index")
@@ -515,15 +609,25 @@ def login():
     error_message = None
 
     if request.method == "POST":
+        submitted_username = normalize_username(request.form.get("username"))
         submitted_password = request.form.get("password", "")
-        if hmac.compare_digest(submitted_password, APP_PASSWORD):
-            session.clear()
-            session["authenticated"] = True
-            return redirect(next_url)
 
-        error_message = "That password was not correct."
+        with get_db_connection() as connection:
+            user = fetch_user_by_username(connection, submitted_username) if submitted_username else None
+            if user and verify_password(submitted_password, user["password_hash"]):
+                update_user_last_login(connection, user["id"])
+                session.clear()
+                session["user_id"] = int(user["id"])
+                return redirect(next_url)
 
-    return render_template("login.html", error_message=error_message, next_url=next_url)
+        error_message = "That username and password combination was not correct."
+
+    return render_template(
+        "login.html",
+        error_message=error_message,
+        next_url=next_url,
+        default_admin_username=DEFAULT_ADMIN_USERNAME,
+    )
 
 
 @app.post("/logout")
@@ -534,18 +638,58 @@ def logout():
 
 @app.route("/")
 def index():
-    payload = build_library_payload()
+    payload = build_library_payload(g.current_user)
     return render_template("index.html", initial_data=payload)
 
 
 @app.route("/api/books")
 def get_books():
-    return build_library_payload()
+    return build_library_payload(g.current_user)
 
 
 @app.get("/api/author-progress")
 def get_author_progress():
-    return {"author_progress": build_library_payload()["author_progress"]}
+    return {"author_progress": build_library_payload(g.current_user)["author_progress"]}
+
+
+@app.get("/api/users")
+def get_users():
+    if not bool(g.current_user["is_admin"]):
+        return admin_required_response()
+
+    return {"users": load_user_summaries()}
+
+
+@app.post("/api/users")
+def create_user_account():
+    if not bool(g.current_user["is_admin"]):
+        return admin_required_response()
+
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        with get_db_connection() as connection:
+            created_user = create_user(
+                connection,
+                username=payload.get("username"),
+                display_name=payload.get("display_name"),
+                password=payload.get("password"),
+                is_admin=bool(payload.get("is_admin")),
+            )
+    except ValueError as error:
+        return {"error": str(error)}, 400
+
+    response_payload = build_library_payload(g.current_user)
+    response_payload.update(
+        {
+            "message": (
+                f"Created a separate library account for {created_user['display_name']} "
+                f"(@{created_user['username']})."
+            ),
+            "user": serialize_user_summary(created_user),
+        }
+    )
+    return response_payload, 201
 
 
 @app.post("/api/books/scan")
@@ -571,19 +715,20 @@ def scan_book():
     with get_db_connection() as connection:
         saved_book, created = upsert_book_record(
             connection,
+            int(g.current_user["id"]),
             metadata,
             preserve_existing_stamped=True,
         )
 
-    response_payload = build_library_payload()
+    response_payload = build_library_payload(g.current_user)
     response_payload.update(
         {
             "book": serialize_book(saved_book),
             "created": created,
             "message": (
-                f"Added {saved_book['title']} to your catalogue."
+                f"Added {saved_book['title']} to {g.current_user['display_name']}'s catalogue."
                 if created
-                else f"Updated {saved_book['title']} in your catalogue."
+                else f"Updated {saved_book['title']} in {g.current_user['display_name']}'s catalogue."
             ),
         }
     )
@@ -596,7 +741,7 @@ def update_book(book_id: int):
 
     try:
         with get_db_connection() as connection:
-            updated_book = update_book_record(connection, book_id, payload)
+            updated_book = update_book_record(connection, int(g.current_user["id"]), book_id, payload)
     except LookupError:
         return {"error": "Book not found."}, 404
     except ValueError as error:
@@ -604,7 +749,7 @@ def update_book(book_id: int):
     except sqlite3.IntegrityError:
         return {"error": "That ISBN already belongs to another book in your catalogue."}, 409
 
-    response_payload = build_library_payload()
+    response_payload = build_library_payload(g.current_user)
     response_payload.update(
         {
             "book": serialize_book(updated_book),
@@ -617,24 +762,24 @@ def update_book(book_id: int):
 @app.delete("/api/books/<int:book_id>")
 def delete_book(book_id: int):
     with get_db_connection() as connection:
-        deleted = delete_book_record(connection, book_id)
+        deleted = delete_book_record(connection, int(g.current_user["id"]), book_id)
 
     if not deleted:
         return {"error": "Book not found."}, 404
 
-    response_payload = build_library_payload()
+    response_payload = build_library_payload(g.current_user)
     response_payload.update({"message": "Deleted the book from your catalogue."})
     return response_payload
 
 
 @app.get("/api/library/export.json")
 def export_json():
-    return export_library_json_response()
+    return export_library_json_response(g.current_user)
 
 
 @app.get("/api/library/export.csv")
 def export_csv():
-    return export_library_csv_response()
+    return export_library_csv_response(g.current_user)
 
 
 @app.post("/api/library/import")
@@ -663,17 +808,19 @@ def import_library_backup():
 
     created_count = 0
     updated_count = 0
+    user_id = int(g.current_user["id"])
 
     try:
         with get_db_connection() as connection:
             if mode == "replace":
-                connection.execute("DELETE FROM books")
+                connection.execute("DELETE FROM books WHERE user_id = ?", (user_id,))
                 if parsed_author_targets:
-                    connection.execute("DELETE FROM author_targets")
+                    connection.execute("DELETE FROM author_targets WHERE user_id = ?", (user_id,))
 
             if parsed_author_targets:
                 seed_author_targets(
                     connection,
+                    user_id=user_id,
                     overwrite=True,
                     targets=parsed_author_targets,
                 )
@@ -681,6 +828,7 @@ def import_library_backup():
             for parsed_book in parsed_books:
                 _, created = upsert_book_record(
                     connection,
+                    user_id,
                     parsed_book,
                     preserve_existing_stamped=False,
                 )
@@ -689,11 +837,11 @@ def import_library_backup():
     except (ValueError, sqlite3.IntegrityError) as error:
         return {"error": f"Import failed: {error}"}, 400
 
-    response_payload = build_library_payload()
+    response_payload = build_library_payload(g.current_user)
     response_payload.update(
         {
             "message": (
-                f"Imported {created_count + updated_count} books "
+                f"Imported {created_count + updated_count} books into your library "
                 f"({created_count} created, {updated_count} updated)."
             )
         }

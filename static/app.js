@@ -2,11 +2,13 @@ const initialStateElement = document.getElementById("initial-books-data");
 
 const initialState = initialStateElement
     ? JSON.parse(initialStateElement.textContent)
-    : { database_ready: false, books: [], author_progress: [] };
+    : { database_ready: false, books: [], author_progress: [], current_user: null, users: [] };
 
 const state = {
     books: Array.isArray(initialState.books) ? initialState.books : [],
     authorProgress: Array.isArray(initialState.author_progress) ? initialState.author_progress : [],
+    currentUser: initialState.current_user || null,
+    users: Array.isArray(initialState.users) ? initialState.users : [],
     databaseReady: Boolean(initialState.database_ready),
     filters: {
         query: "",
@@ -22,6 +24,8 @@ const elements = {
     stampedCount: document.getElementById("stamped-count"),
     visibleCount: document.getElementById("visible-count"),
     listSummary: document.getElementById("list-summary"),
+    currentUserName: document.getElementById("current-user-name"),
+    currentUserMeta: document.getElementById("current-user-meta"),
     authorProgressGrid: document.getElementById("author-progress-grid"),
     booksGrid: document.getElementById("books-grid"),
     emptyState: document.getElementById("empty-state"),
@@ -41,6 +45,14 @@ const elements = {
     authorFilter: document.getElementById("author-filter"),
     stampedFilter: document.getElementById("stamped-filter"),
     sortSelect: document.getElementById("sort-select"),
+    accountManagement: document.getElementById("account-management"),
+    userList: document.getElementById("user-list"),
+    accountForm: document.getElementById("account-form"),
+    accountDisplayName: document.getElementById("account-display-name"),
+    accountUsername: document.getElementById("account-username"),
+    accountPassword: document.getElementById("account-password"),
+    accountIsAdmin: document.getElementById("account-is-admin"),
+    accountSubmit: document.getElementById("account-submit"),
     editModal: document.getElementById("edit-modal"),
     editModalClose: document.getElementById("edit-modal-close"),
     editCancel: document.getElementById("edit-cancel"),
@@ -53,7 +65,9 @@ const elements = {
     editStamped: document.getElementById("edit-stamped"),
 };
 
-elements.editModalClose.innerHTML = "&times;";
+if (elements.editModalClose) {
+    elements.editModalClose.innerHTML = "&times;";
+}
 
 const statusClasses = {
     idle: "border-stone-200 bg-stone-100 text-stone-700",
@@ -113,9 +127,19 @@ function syncState(payload) {
     if (Array.isArray(payload.author_progress)) {
         state.authorProgress = payload.author_progress;
     }
+    if (payload.current_user) {
+        state.currentUser = payload.current_user;
+    }
+    if (Array.isArray(payload.users)) {
+        state.users = payload.users;
+    }
     if (typeof payload.database_ready === "boolean") {
         state.databaseReady = payload.database_ready;
     }
+}
+
+function isAdminUser() {
+    return Boolean(state.currentUser && state.currentUser.is_admin);
 }
 
 function getUniqueAuthors() {
@@ -137,6 +161,64 @@ function updateAuthorFilterOptions() {
     }
 
     elements.authorFilter.value = state.filters.author;
+}
+
+function renderCurrentUser() {
+    if (!state.currentUser || !elements.currentUserName || !elements.currentUserMeta) {
+        return;
+    }
+
+    elements.currentUserName.textContent = state.currentUser.display_name || state.currentUser.username;
+    elements.currentUserMeta.textContent = state.currentUser.is_admin
+        ? `@${state.currentUser.username} • admin`
+        : `@${state.currentUser.username}`;
+}
+
+function renderUserAccounts() {
+    if (!elements.accountManagement || !elements.userList) {
+        return;
+    }
+
+    if (!isAdminUser()) {
+        elements.accountManagement.hidden = true;
+        return;
+    }
+
+    elements.accountManagement.hidden = false;
+
+    if (!state.users.length) {
+        elements.userList.innerHTML = `
+            <div class="rounded-2xl border border-dashed border-stone-300 bg-stone-50 px-4 py-4 text-sm text-stone-600">
+                No user accounts exist yet.
+            </div>
+        `;
+        return;
+    }
+
+    elements.userList.innerHTML = state.users
+        .map(
+            (user) => `
+                <article class="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-4">
+                    <div class="flex items-start justify-between gap-3">
+                        <div>
+                            <h3 class="text-sm font-semibold text-stone-900">${escapeHtml(user.display_name || user.username)}</h3>
+                            <p class="mt-1 text-xs text-stone-600">@${escapeHtml(user.username)}</p>
+                        </div>
+                        <div class="flex flex-wrap items-center justify-end gap-2">
+                            <span class="rounded-full bg-white px-3 py-1 text-xs font-semibold text-stone-700 ring-1 ring-stone-200">
+                                ${Number(user.book_count || 0)} books
+                            </span>
+                            ${
+                                user.is_admin
+                                    ? '<span class="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900">Admin</span>'
+                                    : ""
+                            }
+                        </div>
+                    </div>
+                </article>
+            `,
+        )
+        .join("");
 }
 
 function renderAuthorProgress() {
@@ -238,7 +320,7 @@ function renderSummary(visibleBooks) {
     elements.visibleCount.textContent = String(visibleBooks.length);
 
     if (!totalBooks) {
-        elements.listSummary.textContent = "Your catalogue is empty. Scan a book or restore a backup to get started.";
+        elements.listSummary.textContent = "This library is empty. Scan a book or restore a backup to get started.";
         return;
     }
 
@@ -332,7 +414,7 @@ function renderBooks() {
         elements.booksGrid.innerHTML = "";
         elements.booksGrid.hidden = true;
         elements.emptyState.hidden = false;
-        elements.emptyStateTitle.textContent = "No books in the catalogue yet";
+        elements.emptyStateTitle.textContent = "No books in this catalogue yet";
         elements.emptyStateCopy.textContent = "Scan a barcode, enter an ISBN, or restore a backup to add your first book.";
         return;
     }
@@ -352,6 +434,8 @@ function renderBooks() {
 }
 
 function renderAll() {
+    renderCurrentUser();
+    renderUserAccounts();
     updateAuthorFilterOptions();
     renderAuthorProgress();
     renderBooks();
@@ -613,7 +697,7 @@ elements.importForm.addEventListener("submit", async (event) => {
     const mode = elements.importMode.value;
     if (mode === "replace") {
         const confirmed = window.confirm(
-            "Replace mode will remove your current books before restoring the backup. Continue?",
+            "Replace mode will remove the current account's books before restoring the backup. Continue?",
         );
         if (!confirmed) {
             return;
@@ -645,6 +729,50 @@ elements.importForm.addEventListener("submit", async (event) => {
         elements.importSubmit.disabled = false;
     }
 });
+
+if (elements.accountForm) {
+    elements.accountForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        const username = elements.accountUsername.value.trim().toLowerCase();
+        const password = elements.accountPassword.value;
+        const displayName = elements.accountDisplayName.value.trim();
+
+        if (!username || !password) {
+            setStatus("Enter a username and password for the new account.", "error");
+            return;
+        }
+
+        elements.accountSubmit.disabled = true;
+        setStatus(`Creating a separate library account for @${username}...`, "loading");
+
+        try {
+            const response = await fetch("/api/users", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    username,
+                    password,
+                    display_name: displayName,
+                    is_admin: elements.accountIsAdmin.checked,
+                }),
+            });
+            const payload = await readJsonResponse(response);
+            syncState(payload);
+            renderAll();
+            elements.accountForm.reset();
+            setStatus(payload.message || "User account created.", "success");
+        } catch (error) {
+            if (error.message !== "Redirecting to login.") {
+                setStatus(error.message || "The user account could not be created.", "error");
+            }
+        } finally {
+            elements.accountSubmit.disabled = false;
+        }
+    });
+}
 
 elements.booksGrid.addEventListener("click", (event) => {
     const actionButton = event.target.closest("[data-action]");

@@ -11,14 +11,14 @@
         <section class="grid w-full gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(20rem,26rem)]">
             <div class="overflow-hidden rounded-3xl bg-gradient-to-br from-amber-200 via-orange-100 to-white p-8 shadow-sm ring-1 ring-stone-200 sm:p-10">
                 <p class="text-sm font-semibold uppercase tracking-[0.2em] text-stone-600">Home Library</p>
-                <h1 class="mt-4 text-4xl font-bold tracking-tight text-stone-900 sm:text-5xl">Private Catalogue Access</h1>
+                <h1 class="mt-4 text-4xl font-bold tracking-tight text-stone-900 sm:text-5xl">Private Library Accounts</h1>
                 <p class="mt-4 max-w-2xl text-sm leading-7 text-stone-700 sm:text-base">
-                    Enter your library password to open the scanner and browse your saved books from your phone or desktop.
+                    Sign in with your own username and password to open your personal catalogue from your phone or desktop.
                 </p>
                 <div class="mt-8 grid gap-4 sm:grid-cols-2">
                     <div class="rounded-2xl bg-white/70 p-4 ring-1 ring-white/80">
-                        <p class="text-xs font-semibold uppercase tracking-[0.2em] text-stone-500">Protected</p>
-                        <p class="mt-2 text-sm leading-6 text-stone-700">All catalogue pages and API routes are behind the same shared password.</p>
+                        <p class="text-xs font-semibold uppercase tracking-[0.2em] text-stone-500">Separate Shelves</p>
+                        <p class="mt-2 text-sm leading-6 text-stone-700">Each user gets a separate library, progress dashboard, and backup history.</p>
                     </div>
                     <div class="rounded-2xl bg-white/70 p-4 ring-1 ring-white/80">
                         <p class="text-xs font-semibold uppercase tracking-[0.2em] text-stone-500">Mobile Ready</p>
@@ -30,7 +30,7 @@
             <section class="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-stone-200 sm:p-8">
                 <h2 class="text-2xl font-semibold tracking-tight text-stone-900">Sign In</h2>
                 <p class="mt-2 text-sm leading-6 text-stone-600">
-                    Use the shared password configured in your deployment environment.
+                    Existing upgraded installs start with the owner account username <code class="rounded bg-stone-100 px-2 py-1">{{ default_admin_username }}</code>.
                 </p>
 
                 {% if error_message %}
@@ -43,13 +43,26 @@
                     <input type="hidden" name="next" value="{{ next_url }}">
 
                     <div>
+                        <label for="username" class="block text-sm font-medium text-stone-800">Username</label>
+                        <input
+                            id="username"
+                            name="username"
+                            type="text"
+                            required
+                            autofocus
+                            autocomplete="username"
+                            class="mt-2 w-full rounded-2xl border border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-900 outline-none transition focus:border-amber-400 focus:bg-white focus:ring-2 focus:ring-amber-200"
+                        >
+                    </div>
+
+                    <div>
                         <label for="password" class="block text-sm font-medium text-stone-800">Password</label>
                         <input
                             id="password"
                             name="password"
                             type="password"
                             required
-                            autofocus
+                            autocomplete="current-password"
                             class="mt-2 w-full rounded-2xl border border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-900 outline-none transition focus:border-amber-400 focus:bg-white focus:ring-2 focus:ring-amber-200"
                         >
                     </div>
@@ -58,7 +71,7 @@
                         type="submit"
                         class="inline-flex w-full items-center justify-center rounded-2xl bg-stone-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-stone-800"
                     >
-                        Unlock Library
+                        Open My Library
                     </button>
                 </form>
             </section>

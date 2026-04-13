@@ -19,12 +19,17 @@ OPEN_LIBRARY_BOOKS_API = os.environ.get(
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "5000"))
 FLASK_DEBUG = os.environ.get("FLASK_DEBUG", "0") == "1"
-APP_PASSWORD = os.environ.get("APP_PASSWORD")
 SECRET_KEY = os.environ.get("SECRET_KEY")
 SESSION_COOKIE_SECURE = os.environ.get(
     "SESSION_COOKIE_SECURE",
     "0" if FLASK_DEBUG else "1",
 ) == "1"
+DEFAULT_ADMIN_USERNAME = os.environ.get("DEFAULT_ADMIN_USERNAME", "owner")
+DEFAULT_ADMIN_DISPLAY_NAME = os.environ.get(
+    "DEFAULT_ADMIN_DISPLAY_NAME",
+    DEFAULT_ADMIN_USERNAME.replace("-", " ").replace("_", " ").title(),
+)
+DEFAULT_ADMIN_PASSWORD = os.environ.get("DEFAULT_ADMIN_PASSWORD") or os.environ.get("APP_PASSWORD")
 
 
 def resolve_database_path() -> Path:
