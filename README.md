@@ -1,6 +1,6 @@
 # Home Library Manager
 
-A mobile-friendly Flask app for cataloguing books in a home library with SQLite storage, ISBN scanning, automatic metadata lookup from Open Library, and shared-password protection.
+A mobile-friendly Flask app for cataloguing books in a home library with SQLite storage, ISBN scanning, automatic metadata lookup from Open Library, shared-password protection, author progress tracking, and backup import/export tools.
 
 ## Local development
 
@@ -43,6 +43,19 @@ A mobile-friendly Flask app for cataloguing books in a home library with SQLite 
    ```
 
 7. Open `http://127.0.0.1:5000` and sign in with your password.
+
+## Features
+
+- Scan books by barcode or manual ISBN entry.
+- Search, filter, and sort your catalogue on the page.
+- Edit book details, toggle the `Stamped` flag, and delete books.
+- Track author progress for Mick Herron, C.J. Box, and Bernard Cornwell.
+- Export the library to JSON or CSV and restore JSON backups.
+- Re-seed the stored author progress targets with:
+
+  ```powershell
+  python sync_author_targets.py
+  ```
 
 ## Password protection
 

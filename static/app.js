@@ -2,25 +2,58 @@ const initialStateElement = document.getElementById("initial-books-data");
 
 const initialState = initialStateElement
     ? JSON.parse(initialStateElement.textContent)
-    : { database_ready: false, books: [] };
+    : { database_ready: false, books: [], author_progress: [] };
 
 const state = {
     books: Array.isArray(initialState.books) ? initialState.books : [],
+    authorProgress: Array.isArray(initialState.author_progress) ? initialState.author_progress : [],
     databaseReady: Boolean(initialState.database_ready),
+    filters: {
+        query: "",
+        author: "all",
+        stamped: "all",
+        sort: "title-asc",
+    },
+    editingBookId: null,
 };
 
 const elements = {
     bookCount: document.getElementById("book-count"),
+    stampedCount: document.getElementById("stamped-count"),
+    visibleCount: document.getElementById("visible-count"),
     listSummary: document.getElementById("list-summary"),
+    authorProgressGrid: document.getElementById("author-progress-grid"),
     booksGrid: document.getElementById("books-grid"),
     emptyState: document.getElementById("empty-state"),
+    emptyStateTitle: document.getElementById("empty-state-title"),
+    emptyStateCopy: document.getElementById("empty-state-copy"),
     statusBanner: document.getElementById("status-banner"),
     scannerPill: document.getElementById("scanner-pill"),
     databaseNote: document.getElementById("database-note"),
     manualForm: document.getElementById("manual-isbn-form"),
     manualInput: document.getElementById("manual-isbn-input"),
     manualSubmit: document.getElementById("manual-isbn-submit"),
+    importForm: document.getElementById("import-form"),
+    importFile: document.getElementById("import-file"),
+    importMode: document.getElementById("import-mode"),
+    importSubmit: document.getElementById("import-submit"),
+    searchInput: document.getElementById("search-input"),
+    authorFilter: document.getElementById("author-filter"),
+    stampedFilter: document.getElementById("stamped-filter"),
+    sortSelect: document.getElementById("sort-select"),
+    editModal: document.getElementById("edit-modal"),
+    editModalClose: document.getElementById("edit-modal-close"),
+    editCancel: document.getElementById("edit-cancel"),
+    editForm: document.getElementById("edit-book-form"),
+    editBookId: document.getElementById("edit-book-id"),
+    editTitle: document.getElementById("edit-title"),
+    editAuthor: document.getElementById("edit-author"),
+    editIsbn: document.getElementById("edit-isbn"),
+    editCoverImageUrl: document.getElementById("edit-cover-image-url"),
+    editStamped: document.getElementById("edit-stamped"),
 };
+
+elements.editModalClose.innerHTML = "&times;";
 
 const statusClasses = {
     idle: "border-stone-200 bg-stone-100 text-stone-700",
@@ -74,8 +107,142 @@ function setScannerPill(label, tone = "idle") {
 }
 
 function syncState(payload) {
-    state.books = Array.isArray(payload.books) ? payload.books : [];
-    state.databaseReady = Boolean(payload.database_ready);
+    if (Array.isArray(payload.books)) {
+        state.books = payload.books;
+    }
+    if (Array.isArray(payload.author_progress)) {
+        state.authorProgress = payload.author_progress;
+    }
+    if (typeof payload.database_ready === "boolean") {
+        state.databaseReady = payload.database_ready;
+    }
+}
+
+function getUniqueAuthors() {
+    return [...new Set(state.books.map((book) => book.author).filter(Boolean))].sort((left, right) =>
+        left.localeCompare(right),
+    );
+}
+
+function updateAuthorFilterOptions() {
+    const currentValue = state.filters.author;
+    const authors = getUniqueAuthors();
+    elements.authorFilter.innerHTML = [
+        '<option value="all">All authors</option>',
+        ...authors.map((author) => `<option value="${escapeHtml(author)}">${escapeHtml(author)}</option>`),
+    ].join("");
+
+    if (!authors.includes(currentValue)) {
+        state.filters.author = "all";
+    }
+
+    elements.authorFilter.value = state.filters.author;
+}
+
+function renderAuthorProgress() {
+    if (!state.authorProgress.length) {
+        elements.authorProgressGrid.innerHTML = `
+            <div class="rounded-3xl border border-dashed border-stone-300 bg-stone-50 p-6 text-sm text-stone-600">
+                Author progress targets have not been configured yet.
+            </div>
+        `;
+        return;
+    }
+
+    elements.authorProgressGrid.innerHTML = state.authorProgress
+        .map((entry) => {
+            const progressWidth = Math.min(entry.completion_percentage || 0, 100);
+            return `
+                <article class="rounded-3xl border border-stone-200 bg-stone-50 p-5 shadow-sm">
+                    <div class="flex items-start justify-between gap-4">
+                        <div>
+                            <h3 class="text-lg font-semibold text-stone-900">${escapeHtml(entry.author_name)}</h3>
+                            <p class="mt-1 text-sm text-stone-600">${entry.owned_books} owned of ${entry.total_books} tracked works</p>
+                        </div>
+                        <span class="rounded-full bg-stone-900 px-3 py-1 text-xs font-semibold text-white">
+                            ${Number(entry.completion_percentage || 0).toFixed(1)}%
+                        </span>
+                    </div>
+                    <div class="mt-4 h-3 overflow-hidden rounded-full bg-stone-200">
+                        <div
+                            class="h-full rounded-full bg-gradient-to-r from-amber-400 via-orange-500 to-stone-900 transition-all"
+                            style="width: ${progressWidth}%"
+                        ></div>
+                    </div>
+                    <div class="mt-4 flex items-center justify-between text-xs text-stone-500">
+                        <span>${entry.remaining_books} remaining</span>
+                        ${entry.source_url ? `<a class="font-medium text-stone-700 underline-offset-4 hover:underline" href="${escapeHtml(entry.source_url)}" target="_blank" rel="noreferrer">Source</a>` : ""}
+                    </div>
+                </article>
+            `;
+        })
+        .join("");
+}
+
+function compareBooks(left, right, mode) {
+    if (mode === "author-asc") {
+        const authorCompare = left.author.localeCompare(right.author);
+        return authorCompare || left.title.localeCompare(right.title);
+    }
+
+    if (mode === "newest") {
+        return right.id - left.id;
+    }
+
+    if (mode === "oldest") {
+        return left.id - right.id;
+    }
+
+    if (mode === "stamped-first") {
+        return Number(right.stamped) - Number(left.stamped) || left.title.localeCompare(right.title);
+    }
+
+    return left.title.localeCompare(right.title);
+}
+
+function getFilteredBooks() {
+    const query = elements.searchInput.value.trim().toLowerCase();
+    const selectedAuthor = state.filters.author;
+    const stampedFilter = state.filters.stamped;
+    const sortMode = state.filters.sort;
+
+    return [...state.books]
+        .filter((book) => {
+            if (selectedAuthor !== "all" && book.author !== selectedAuthor) {
+                return false;
+            }
+
+            if (stampedFilter === "stamped" && !book.stamped) {
+                return false;
+            }
+
+            if (stampedFilter === "unstamped" && book.stamped) {
+                return false;
+            }
+
+            if (!query) {
+                return true;
+            }
+
+            const haystack = `${book.title} ${book.author} ${book.isbn}`.toLowerCase();
+            return haystack.includes(query);
+        })
+        .sort((left, right) => compareBooks(left, right, sortMode));
+}
+
+function renderSummary(visibleBooks) {
+    const totalBooks = state.books.length;
+    const stampedBooks = state.books.filter((book) => book.stamped).length;
+    elements.bookCount.textContent = String(totalBooks);
+    elements.stampedCount.textContent = String(stampedBooks);
+    elements.visibleCount.textContent = String(visibleBooks.length);
+
+    if (!totalBooks) {
+        elements.listSummary.textContent = "Your catalogue is empty. Scan a book or restore a backup to get started.";
+        return;
+    }
+
+    elements.listSummary.textContent = `Showing ${visibleBooks.length} of ${totalBooks} books. ${stampedBooks} stamped.`;
 }
 
 function renderBookCard(book) {
@@ -102,7 +269,7 @@ function renderBookCard(book) {
     return `
         <article class="overflow-hidden rounded-3xl bg-white shadow-sm ring-1 ring-stone-200">
             <div class="flex gap-4 p-4 sm:p-5">
-                <div class="h-32 w-24 shrink-0 overflow-hidden rounded-2xl bg-stone-200">
+                <div class="h-36 w-24 shrink-0 overflow-hidden rounded-2xl bg-stone-200">
                     ${coverMarkup}
                 </div>
 
@@ -123,6 +290,33 @@ function renderBookCard(book) {
                             <dd class="break-all">${escapeHtml(book.isbn)}</dd>
                         </div>
                     </dl>
+
+                    <div class="mt-5 flex flex-wrap gap-2">
+                        <button
+                            type="button"
+                            data-action="toggle-stamped"
+                            data-id="${book.id}"
+                            class="inline-flex items-center justify-center rounded-2xl border border-stone-300 bg-stone-50 px-4 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-400 hover:bg-white"
+                        >
+                            ${book.stamped ? "Remove stamp" : "Mark stamped"}
+                        </button>
+                        <button
+                            type="button"
+                            data-action="edit"
+                            data-id="${book.id}"
+                            class="inline-flex items-center justify-center rounded-2xl border border-stone-300 bg-stone-50 px-4 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-400 hover:bg-white"
+                        >
+                            Edit
+                        </button>
+                        <button
+                            type="button"
+                            data-action="delete"
+                            data-id="${book.id}"
+                            class="inline-flex items-center justify-center rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-100"
+                        >
+                            Delete
+                        </button>
+                    </div>
                 </div>
             </div>
         </article>
@@ -130,24 +324,65 @@ function renderBookCard(book) {
 }
 
 function renderBooks() {
-    const bookCount = state.books.length;
-    elements.bookCount.textContent = String(bookCount);
-    elements.listSummary.textContent = bookCount
-        ? `${bookCount} ${bookCount === 1 ? "book" : "books"} in your local catalogue.`
-        : "Scan a barcode or enter an ISBN to build your catalogue.";
-
+    const visibleBooks = getFilteredBooks();
+    renderSummary(visibleBooks);
     elements.databaseNote.hidden = state.databaseReady;
 
-    if (bookCount === 0) {
+    if (!state.books.length) {
         elements.booksGrid.innerHTML = "";
         elements.booksGrid.hidden = true;
         elements.emptyState.hidden = false;
+        elements.emptyStateTitle.textContent = "No books in the catalogue yet";
+        elements.emptyStateCopy.textContent = "Scan a barcode, enter an ISBN, or restore a backup to add your first book.";
+        return;
+    }
+
+    if (!visibleBooks.length) {
+        elements.booksGrid.innerHTML = "";
+        elements.booksGrid.hidden = true;
+        elements.emptyState.hidden = false;
+        elements.emptyStateTitle.textContent = "No books match your current filters";
+        elements.emptyStateCopy.textContent = "Try a broader search or reset one of the filters above.";
         return;
     }
 
     elements.booksGrid.hidden = false;
     elements.emptyState.hidden = true;
-    elements.booksGrid.innerHTML = state.books.map(renderBookCard).join("");
+    elements.booksGrid.innerHTML = visibleBooks.map(renderBookCard).join("");
+}
+
+function renderAll() {
+    updateAuthorFilterOptions();
+    renderAuthorProgress();
+    renderBooks();
+}
+
+function findBook(bookId) {
+    return state.books.find((book) => book.id === bookId) || null;
+}
+
+function openEditModal(book) {
+    if (!book) {
+        return;
+    }
+
+    state.editingBookId = book.id;
+    elements.editBookId.value = String(book.id);
+    elements.editTitle.value = book.title;
+    elements.editAuthor.value = book.author;
+    elements.editIsbn.value = book.isbn;
+    elements.editCoverImageUrl.value = book.cover_image_url || "";
+    elements.editStamped.checked = Boolean(book.stamped);
+    elements.editModal.classList.remove("hidden");
+    elements.editModal.classList.add("flex");
+    elements.editTitle.focus();
+}
+
+function closeEditModal() {
+    state.editingBookId = null;
+    elements.editForm.reset();
+    elements.editModal.classList.add("hidden");
+    elements.editModal.classList.remove("flex");
 }
 
 function pauseScanner() {
@@ -180,6 +415,26 @@ function resumeScannerSoon(delay = 2500) {
     }, delay);
 }
 
+async function readJsonResponse(response) {
+    if (response.status === 401) {
+        window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+        throw new Error("Redirecting to login.");
+    }
+
+    let payload = {};
+    try {
+        payload = await response.json();
+    } catch (_error) {
+        payload = {};
+    }
+
+    if (!response.ok) {
+        throw new Error(payload.error || "The request could not be completed.");
+    }
+
+    return payload;
+}
+
 async function saveIsbn(rawIsbn, sourceLabel) {
     const isbn = normalizeIsbn(rawIsbn);
     if (!isbn) {
@@ -206,31 +461,77 @@ async function saveIsbn(rawIsbn, sourceLabel) {
             },
             body: JSON.stringify({ isbn }),
         });
-
-        if (response.status === 401) {
-            window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
-            return;
-        }
-
-        const payload = await response.json();
-
-        if (!response.ok) {
-            throw new Error(payload.error || "The ISBN could not be saved.");
-        }
-
+        const payload = await readJsonResponse(response);
         syncState(payload);
-        renderBooks();
+        renderAll();
         elements.manualInput.value = "";
-        setStatus(payload.message, "success");
+        setStatus(payload.message || "Book saved.", "success");
         setScannerPill("Saved", "success");
     } catch (error) {
-        setStatus(error.message || "The ISBN could not be saved.", "error");
-        setScannerPill("Retry", "error");
+        if (error.message !== "Redirecting to login.") {
+            setStatus(error.message || "The ISBN could not be saved.", "error");
+            setScannerPill("Retry", "error");
+        }
     } finally {
         isSaving = false;
         elements.manualInput.disabled = false;
         elements.manualSubmit.disabled = false;
         resumeScannerSoon();
+    }
+}
+
+async function patchBook(bookId, updates, successMessage) {
+    try {
+        const response = await fetch(`/api/books/${bookId}`, {
+            method: "PATCH",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(updates),
+        });
+        const payload = await readJsonResponse(response);
+        syncState(payload);
+        renderAll();
+        setStatus(payload.message || successMessage, "success");
+        setScannerPill("Updated", "success");
+        return true;
+    } catch (error) {
+        if (error.message !== "Redirecting to login.") {
+            setStatus(error.message || "The book could not be updated.", "error");
+            setScannerPill("Retry", "error");
+        }
+        return false;
+    }
+}
+
+async function deleteBook(bookId) {
+    const book = findBook(bookId);
+    if (!book) {
+        return;
+    }
+
+    const confirmed = window.confirm(`Delete "${book.title}" from your catalogue?`);
+    if (!confirmed) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/books/${bookId}`, {
+            method: "DELETE",
+        });
+        const payload = await readJsonResponse(response);
+        syncState(payload);
+        renderAll();
+        setStatus(payload.message || "Book deleted.", "success");
+        setScannerPill("Updated", "success");
+        if (state.editingBookId === bookId) {
+            closeEditModal();
+        }
+    } catch (error) {
+        if (error.message !== "Redirecting to login.") {
+            setStatus(error.message || "The book could not be deleted.", "error");
+            setScannerPill("Retry", "error");
+        }
     }
 }
 
@@ -275,9 +576,134 @@ function initialiseScanner() {
     setScannerPill("Ready", "idle");
 }
 
+elements.searchInput.addEventListener("input", (event) => {
+    state.filters.query = event.target.value;
+    renderBooks();
+});
+
+elements.authorFilter.addEventListener("change", (event) => {
+    state.filters.author = event.target.value;
+    renderBooks();
+});
+
+elements.stampedFilter.addEventListener("change", (event) => {
+    state.filters.stamped = event.target.value;
+    renderBooks();
+});
+
+elements.sortSelect.addEventListener("change", (event) => {
+    state.filters.sort = event.target.value;
+    renderBooks();
+});
+
 elements.manualForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void saveIsbn(elements.manualInput.value, "manual entry");
+});
+
+elements.importForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const file = elements.importFile.files?.[0];
+    if (!file) {
+        setStatus("Choose a JSON backup file before restoring.", "error");
+        return;
+    }
+
+    const mode = elements.importMode.value;
+    if (mode === "replace") {
+        const confirmed = window.confirm(
+            "Replace mode will remove your current books before restoring the backup. Continue?",
+        );
+        if (!confirmed) {
+            return;
+        }
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("mode", mode);
+
+    elements.importSubmit.disabled = true;
+    setStatus("Restoring your backup file...", "loading");
+
+    try {
+        const response = await fetch("/api/library/import", {
+            method: "POST",
+            body: formData,
+        });
+        const payload = await readJsonResponse(response);
+        syncState(payload);
+        renderAll();
+        elements.importForm.reset();
+        setStatus(payload.message || "Backup restored.", "success");
+    } catch (error) {
+        if (error.message !== "Redirecting to login.") {
+            setStatus(error.message || "The backup could not be restored.", "error");
+        }
+    } finally {
+        elements.importSubmit.disabled = false;
+    }
+});
+
+elements.booksGrid.addEventListener("click", (event) => {
+    const actionButton = event.target.closest("[data-action]");
+    if (!actionButton) {
+        return;
+    }
+
+    const bookId = Number(actionButton.dataset.id);
+    const book = findBook(bookId);
+    if (!book) {
+        return;
+    }
+
+    if (actionButton.dataset.action === "toggle-stamped") {
+        void patchBook(
+            bookId,
+            { stamped: !book.stamped },
+            book.stamped ? "Removed library stamp." : "Marked book as stamped.",
+        );
+        return;
+    }
+
+    if (actionButton.dataset.action === "edit") {
+        openEditModal(book);
+        return;
+    }
+
+    if (actionButton.dataset.action === "delete") {
+        void deleteBook(bookId);
+    }
+});
+
+elements.editForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const bookId = Number(elements.editBookId.value);
+
+    const saved = await patchBook(
+        bookId,
+        {
+            title: elements.editTitle.value,
+            author: elements.editAuthor.value,
+            isbn: elements.editIsbn.value,
+            cover_image_url: elements.editCoverImageUrl.value,
+            stamped: elements.editStamped.checked,
+        },
+        "Saved book changes.",
+    );
+
+    if (saved) {
+        closeEditModal();
+    }
+});
+
+elements.editCancel.addEventListener("click", closeEditModal);
+elements.editModalClose.addEventListener("click", closeEditModal);
+elements.editModal.addEventListener("click", (event) => {
+    if (event.target === elements.editModal) {
+        closeEditModal();
+    }
 });
 
 window.addEventListener("beforeunload", () => {
@@ -286,5 +712,5 @@ window.addEventListener("beforeunload", () => {
     }
 });
 
-renderBooks();
+renderAll();
 initialiseScanner();
