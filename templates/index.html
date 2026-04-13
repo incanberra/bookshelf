@@ -35,7 +35,7 @@
                         <div>
                             <p id="current-user-name" class="font-semibold text-stone-900">{{ initial_data.current_user.display_name }}</p>
                             <p id="current-user-meta" class="text-xs text-stone-600">
-                                @{{ initial_data.current_user.username }}{% if initial_data.current_user.is_admin %} • admin{% endif %}
+                                @{{ initial_data.current_user.username }}{% if initial_data.current_user.is_admin %} - admin{% endif %}
                             </p>
                         </div>
                     </div>
@@ -387,6 +387,18 @@
                         id="edit-cover-image-url"
                         name="cover_image_url"
                         type="url"
+                        class="mt-2 w-full rounded-2xl border border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-900 outline-none transition focus:border-amber-400 focus:bg-white focus:ring-2 focus:ring-amber-200"
+                    >
+                </div>
+
+                <div>
+                    <label for="edit-copy-count" class="block text-sm font-medium text-stone-800">Copies owned</label>
+                    <input
+                        id="edit-copy-count"
+                        name="copy_count"
+                        type="number"
+                        min="1"
+                        required
                         class="mt-2 w-full rounded-2xl border border-stone-300 bg-stone-50 px-4 py-3 text-sm text-stone-900 outline-none transition focus:border-amber-400 focus:bg-white focus:ring-2 focus:ring-amber-200"
                     >
                 </div>

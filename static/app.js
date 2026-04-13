@@ -62,6 +62,7 @@ const elements = {
     editAuthor: document.getElementById("edit-author"),
     editIsbn: document.getElementById("edit-isbn"),
     editCoverImageUrl: document.getElementById("edit-cover-image-url"),
+    editCopyCount: document.getElementById("edit-copy-count"),
     editStamped: document.getElementById("edit-stamped"),
 };
 
@@ -108,6 +109,15 @@ function normalizeIsbn(value) {
         .replace(/[^0-9X]/g, "");
 
     return normalized.length === 10 || normalized.length === 13 ? normalized : null;
+}
+
+function getCopyCount(book) {
+    const rawCount = Number(book?.copy_count);
+    return Number.isFinite(rawCount) && rawCount >= 1 ? rawCount : 1;
+}
+
+function formatCopyLabel(copyCount) {
+    return `${copyCount} ${copyCount === 1 ? "copy" : "copies"}`;
 }
 
 function setStatus(message, tone = "idle") {
@@ -169,6 +179,10 @@ function renderCurrentUser() {
     }
 
     elements.currentUserName.textContent = state.currentUser.display_name || state.currentUser.username;
+    if (state.currentUser.is_admin) {
+        elements.currentUserMeta.textContent = `@${state.currentUser.username} - admin`;
+        return;
+    }
     elements.currentUserMeta.textContent = state.currentUser.is_admin
         ? `@${state.currentUser.username} • admin`
         : `@${state.currentUser.username}`;
@@ -313,18 +327,26 @@ function getFilteredBooks() {
 }
 
 function renderSummary(visibleBooks) {
-    const totalBooks = state.books.length;
-    const stampedBooks = state.books.filter((book) => book.stamped).length;
-    elements.bookCount.textContent = String(totalBooks);
-    elements.stampedCount.textContent = String(stampedBooks);
-    elements.visibleCount.textContent = String(visibleBooks.length);
+    const totalCopies = state.books.reduce((sum, book) => sum + getCopyCount(book), 0);
+    const stampedCopies = state.books.reduce(
+        (sum, book) => sum + (book.stamped ? getCopyCount(book) : 0),
+        0,
+    );
+    const visibleCopies = visibleBooks.reduce((sum, book) => sum + getCopyCount(book), 0);
 
-    if (!totalBooks) {
+    elements.bookCount.textContent = String(totalCopies);
+    elements.stampedCount.textContent = String(stampedCopies);
+    elements.visibleCount.textContent = String(visibleCopies);
+
+    if (!totalCopies) {
         elements.listSummary.textContent = "This library is empty. Scan a book or restore a backup to get started.";
         return;
     }
 
-    elements.listSummary.textContent = `Showing ${visibleBooks.length} of ${totalBooks} books. ${stampedBooks} stamped.`;
+    elements.listSummary.textContent =
+        `Showing ${visibleBooks.length} ${visibleBooks.length === 1 ? "title" : "titles"} ` +
+        `across ${visibleCopies} ${visibleCopies === 1 ? "copy" : "copies"}. ` +
+        `${stampedCopies} stamped ${stampedCopies === 1 ? "copy" : "copies"} in the library.`;
 }
 
 function renderBookCard(book) {
@@ -348,6 +370,8 @@ function renderBookCard(book) {
             </div>
         `;
 
+    const copyCount = getCopyCount(book);
+
     return `
         <article class="overflow-hidden rounded-3xl bg-white shadow-sm ring-1 ring-stone-200">
             <div class="flex gap-4 p-4 sm:p-5">
@@ -361,15 +385,24 @@ function renderBookCard(book) {
                             <h3 class="text-lg font-semibold leading-6 text-stone-900">${escapeHtml(book.title)}</h3>
                             <p class="mt-1 text-sm text-stone-600">${escapeHtml(book.author)}</p>
                         </div>
-                        <span class="shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${badgeClasses}">
-                            ${book.stamped ? "Stamped" : "Not stamped"}
-                        </span>
+                        <div class="flex flex-col items-end gap-2">
+                            <span class="shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${badgeClasses}">
+                                ${book.stamped ? "Stamped" : "Not stamped"}
+                            </span>
+                            <span class="shrink-0 rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900">
+                                ${formatCopyLabel(copyCount)}
+                            </span>
+                        </div>
                     </div>
 
                     <dl class="mt-4 space-y-2 text-sm text-stone-600">
                         <div>
                             <dt class="font-medium text-stone-800">ISBN</dt>
                             <dd class="break-all">${escapeHtml(book.isbn)}</dd>
+                        </div>
+                        <div>
+                            <dt class="font-medium text-stone-800">Copies owned</dt>
+                            <dd>${formatCopyLabel(copyCount)}</dd>
                         </div>
                     </dl>
 
@@ -456,6 +489,7 @@ function openEditModal(book) {
     elements.editAuthor.value = book.author;
     elements.editIsbn.value = book.isbn;
     elements.editCoverImageUrl.value = book.cover_image_url || "";
+    elements.editCopyCount.value = String(getCopyCount(book));
     elements.editStamped.checked = Boolean(book.stamped);
     elements.editModal.classList.remove("hidden");
     elements.editModal.classList.add("flex");
@@ -519,6 +553,17 @@ async function readJsonResponse(response) {
     return payload;
 }
 
+async function postScanRequest(isbn, extraPayload = {}) {
+    const response = await fetch("/api/books/scan", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ isbn, ...extraPayload }),
+    });
+    return readJsonResponse(response);
+}
+
 async function saveIsbn(rawIsbn, sourceLabel) {
     const isbn = normalizeIsbn(rawIsbn);
     if (!isbn) {
@@ -538,14 +583,26 @@ async function saveIsbn(rawIsbn, sourceLabel) {
     setScannerPill("Saving", "loading");
 
     try {
-        const response = await fetch("/api/books/scan", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ isbn }),
-        });
-        const payload = await readJsonResponse(response);
+        let payload = await postScanRequest(isbn);
+
+        if (payload.requires_confirmation && payload.book) {
+            const duplicateBook = payload.book;
+            const confirmed = window.confirm(
+                payload.message ||
+                    `${duplicateBook.title} is already in your catalogue with ${formatCopyLabel(getCopyCount(duplicateBook))}. Is this an additional copy?`,
+            );
+
+            if (!confirmed) {
+                elements.manualInput.value = "";
+                setStatus(`Left ${duplicateBook.title} unchanged.`, "idle");
+                setScannerPill("Duplicate skipped", "idle");
+                return;
+            }
+
+            setStatus(`Adding another copy of ${duplicateBook.title}...`, "loading");
+            payload = await postScanRequest(isbn, { duplicate_decision: "additional_copy" });
+        }
+
         syncState(payload);
         renderAll();
         elements.manualInput.value = "";
@@ -816,6 +873,7 @@ elements.editForm.addEventListener("submit", async (event) => {
             author: elements.editAuthor.value,
             isbn: elements.editIsbn.value,
             cover_image_url: elements.editCoverImageUrl.value,
+            copy_count: elements.editCopyCount.value,
             stamped: elements.editStamped.checked,
         },
         "Saved book changes.",

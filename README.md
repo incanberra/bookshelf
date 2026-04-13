@@ -51,6 +51,7 @@ A mobile-friendly Flask app for cataloguing books in a home library with SQLite 
 - Keep separate libraries for multiple users on the same deployment.
 - Search, filter, and sort your catalogue on the page.
 - Edit book details, toggle the `Stamped` flag, and delete books.
+- Prompt on duplicate scans so you can track additional copies instead of creating accidental duplicates.
 - Track author progress for Mick Herron, C.J. Box, and Bernard Cornwell.
 - Export the library to JSON or CSV and restore JSON backups.
 - Create additional user accounts from the admin dashboard.
@@ -176,9 +177,10 @@ This app uses SQLite, so keep it on a single running instance. Persistent disks 
 ## App behavior
 
 - The `users` table stores account credentials and admin access.
-- The `books` table stores `title`, `author`, `isbn`, `cover_image_url`, and `stamped`, scoped per user.
+- The `books` table stores `title`, `author`, `isbn`, `cover_image_url`, `stamped`, and `copy_count`, scoped per user.
 - The `author_targets` table is stored per user so progress and restores stay separate.
 - Scanned or manually entered ISBNs are posted to `/api/books/scan`.
+- If the scanned ISBN already exists in that user's catalogue, the UI asks whether it is an additional copy and increments `copy_count` when confirmed.
 - The backend looks up book metadata using the Open Library Books API and stores it in SQLite.
 - The frontend uses `html5-qrcode` from `https://unpkg.com/html5-qrcode`.
 - Camera access generally requires HTTPS or `localhost`.

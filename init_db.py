@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS books (
     isbn TEXT NOT NULL,
     cover_image_url TEXT,
     stamped INTEGER NOT NULL DEFAULT 0 CHECK (stamped IN (0, 1)),
+    copy_count INTEGER NOT NULL DEFAULT 1 CHECK (copy_count >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -308,8 +309,17 @@ def migrate_books_table(connection: sqlite3.Connection, owner_user_id: int) -> b
         return False
 
     columns = get_table_columns(connection, "books")
-    if {"user_id", "created_at", "updated_at"}.issubset(columns):
+    if {"user_id", "created_at", "updated_at", "copy_count"}.issubset(columns):
         return False
+
+    if {"user_id", "created_at", "updated_at"}.issubset(columns):
+        connection.execute(
+            "ALTER TABLE books ADD COLUMN copy_count INTEGER NOT NULL DEFAULT 1 CHECK (copy_count >= 1)"
+        )
+        connection.execute(
+            "UPDATE books SET copy_count = 1 WHERE copy_count IS NULL OR copy_count < 1"
+        )
+        return True
 
     legacy_rows = connection.execute(
         """
@@ -327,9 +337,9 @@ def migrate_books_table(connection: sqlite3.Connection, owner_user_id: int) -> b
         connection.execute(
             """
             INSERT INTO books (
-                id, user_id, title, author, isbn, cover_image_url, stamped, created_at, updated_at
+                id, user_id, title, author, isbn, cover_image_url, stamped, copy_count, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row["id"],
@@ -339,6 +349,7 @@ def migrate_books_table(connection: sqlite3.Connection, owner_user_id: int) -> b
                 row["isbn"],
                 row["cover_image_url"],
                 row["stamped"],
+                1,
                 migrated_at,
                 migrated_at,
             ),

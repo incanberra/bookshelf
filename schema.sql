@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS books (
     isbn TEXT NOT NULL,
     cover_image_url TEXT,
     stamped INTEGER NOT NULL DEFAULT 0 CHECK (stamped IN (0, 1)),
+    copy_count INTEGER NOT NULL DEFAULT 1 CHECK (copy_count >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,

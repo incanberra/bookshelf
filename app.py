@@ -166,6 +166,21 @@ def coerce_stamped(value: object | None, fallback: bool = False) -> int:
     return 1 if normalized in {"1", "true", "yes", "on", "y"} else 0
 
 
+def coerce_copy_count(value: object | None, fallback: int = 1) -> int:
+    if value is None or clean_text(value) == "":
+        copy_count = int(fallback or 1)
+    else:
+        try:
+            copy_count = int(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Copy count must be a whole number.") from error
+
+    if copy_count < 1:
+        raise ValueError("Copy count must be at least 1.")
+
+    return copy_count
+
+
 def serialize_book(book: sqlite3.Row | dict) -> dict:
     return {
         "id": book["id"],
@@ -174,6 +189,7 @@ def serialize_book(book: sqlite3.Row | dict) -> dict:
         "isbn": book["isbn"],
         "cover_image_url": book["cover_image_url"],
         "stamped": bool(book["stamped"]),
+        "copy_count": int(book["copy_count"]),
         "created_at": book["created_at"],
         "updated_at": book["updated_at"],
     }
@@ -205,7 +221,7 @@ def load_books(user_id: int) -> tuple[list[sqlite3.Row], bool]:
         with get_db_connection() as connection:
             books = connection.execute(
                 """
-                SELECT id, user_id, title, author, isbn, cover_image_url, stamped, created_at, updated_at
+                SELECT id, user_id, title, author, isbn, cover_image_url, stamped, copy_count, created_at, updated_at
                 FROM books
                 WHERE user_id = ?
                 ORDER BY title COLLATE NOCASE ASC
@@ -241,7 +257,7 @@ def load_user_summaries() -> list[dict]:
                 users.is_admin,
                 users.created_at,
                 users.last_login_at,
-                COUNT(books.id) AS book_count
+                COALESCE(SUM(books.copy_count), 0) AS book_count
             FROM users
             LEFT JOIN books ON books.user_id = users.id
             GROUP BY users.id
@@ -327,19 +343,25 @@ def prepare_book_fields(
             raw_book["stamped"] if "stamped" in raw_book else existing_book["stamped"] if existing_book else False
         )
 
+    copy_count = coerce_copy_count(
+        raw_book["copy_count"] if "copy_count" in raw_book else existing_book["copy_count"] if existing_book else 1,
+        fallback=existing_book["copy_count"] if existing_book else 1,
+    )
+
     return {
         "title": title,
         "author": author,
         "isbn": isbn,
         "cover_image_url": cover_image_url,
         "stamped": stamped,
+        "copy_count": copy_count,
     }
 
 
 def fetch_book_by_id(connection: sqlite3.Connection, user_id: int, book_id: int) -> sqlite3.Row | None:
     return connection.execute(
         """
-        SELECT id, user_id, title, author, isbn, cover_image_url, stamped, created_at, updated_at
+        SELECT id, user_id, title, author, isbn, cover_image_url, stamped, copy_count, created_at, updated_at
         FROM books
         WHERE id = ? AND user_id = ?
         """,
@@ -350,7 +372,7 @@ def fetch_book_by_id(connection: sqlite3.Connection, user_id: int, book_id: int)
 def fetch_book_by_isbn(connection: sqlite3.Connection, user_id: int, isbn: str) -> sqlite3.Row | None:
     return connection.execute(
         """
-        SELECT id, user_id, title, author, isbn, cover_image_url, stamped, created_at, updated_at
+        SELECT id, user_id, title, author, isbn, cover_image_url, stamped, copy_count, created_at, updated_at
         FROM books
         WHERE isbn = ? AND user_id = ?
         """,
@@ -377,7 +399,7 @@ def upsert_book_record(
         connection.execute(
             """
             UPDATE books
-            SET title = ?, author = ?, cover_image_url = ?, stamped = ?, updated_at = ?
+            SET title = ?, author = ?, cover_image_url = ?, stamped = ?, copy_count = ?, updated_at = ?
             WHERE id = ? AND user_id = ?
             """,
             (
@@ -385,6 +407,7 @@ def upsert_book_record(
                 prepared_book["author"],
                 prepared_book["cover_image_url"],
                 prepared_book["stamped"],
+                prepared_book["copy_count"],
                 now,
                 existing_book["id"],
                 user_id,
@@ -395,8 +418,8 @@ def upsert_book_record(
 
     cursor = connection.execute(
         """
-        INSERT INTO books (user_id, title, author, isbn, cover_image_url, stamped, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO books (user_id, title, author, isbn, cover_image_url, stamped, copy_count, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             user_id,
@@ -405,6 +428,7 @@ def upsert_book_record(
             prepared_book["isbn"],
             prepared_book["cover_image_url"],
             prepared_book["stamped"],
+            prepared_book["copy_count"],
             now,
             now,
         ),
@@ -427,7 +451,7 @@ def update_book_record(
     connection.execute(
         """
         UPDATE books
-        SET title = ?, author = ?, isbn = ?, cover_image_url = ?, stamped = ?, updated_at = ?
+        SET title = ?, author = ?, isbn = ?, cover_image_url = ?, stamped = ?, copy_count = ?, updated_at = ?
         WHERE id = ? AND user_id = ?
         """,
         (
@@ -436,12 +460,32 @@ def update_book_record(
             prepared_book["isbn"],
             prepared_book["cover_image_url"],
             prepared_book["stamped"],
+            prepared_book["copy_count"],
             utc_now_iso(),
             book_id,
             user_id,
         ),
     )
     return fetch_book_by_id(connection, user_id, book_id)
+
+
+def increment_book_copy_count(
+    connection: sqlite3.Connection,
+    user_id: int,
+    book_id: int,
+) -> sqlite3.Row:
+    connection.execute(
+        """
+        UPDATE books
+        SET copy_count = copy_count + 1, updated_at = ?
+        WHERE id = ? AND user_id = ?
+        """,
+        (utc_now_iso(), book_id, user_id),
+    )
+    updated_book = fetch_book_by_id(connection, user_id, book_id)
+    if updated_book is None:
+        raise LookupError("Book not found.")
+    return updated_book
 
 
 def delete_book_record(connection: sqlite3.Connection, user_id: int, book_id: int) -> bool:
@@ -541,6 +585,7 @@ def parse_books_from_import(import_payload: object) -> list[dict]:
                 "isbn": book.get("isbn", ""),
                 "cover_image_url": book.get("cover_image_url", ""),
                 "stamped": book.get("stamped", False),
+                "copy_count": book.get("copy_count", 1),
             }
         )
 
@@ -552,7 +597,7 @@ def export_library_json_response(user: sqlite3.Row | dict) -> Response:
     payload.update(
         {
             "exported_at": utc_now_iso(),
-            "version": 3,
+            "version": 4,
             "account": serialize_current_user(user),
             "author_targets": [
                 serialize_author_target(target)
@@ -575,7 +620,7 @@ def export_library_csv_response(user: sqlite3.Row | dict) -> Response:
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer,
-        fieldnames=["title", "author", "isbn", "cover_image_url", "stamped"],
+        fieldnames=["title", "author", "isbn", "cover_image_url", "stamped", "copy_count"],
     )
     writer.writeheader()
     for book in payload["books"]:
@@ -586,6 +631,7 @@ def export_library_csv_response(user: sqlite3.Row | dict) -> Response:
                 "isbn": book["isbn"],
                 "cover_image_url": book["cover_image_url"] or "",
                 "stamped": "true" if book["stamped"] else "false",
+                "copy_count": book["copy_count"],
             }
         )
 
@@ -696,11 +742,48 @@ def create_user_account():
 def scan_book():
     payload = request.get_json(silent=True) or {}
     raw_isbn = payload.get("isbn", "")
+    duplicate_decision = clean_text(payload.get("duplicate_decision")).lower()
 
     try:
         isbn = normalize_isbn(raw_isbn)
     except ValueError as error:
         return {"error": str(error)}, 400
+
+    if duplicate_decision and duplicate_decision != "additional_copy":
+        return {"error": "Duplicate decision must be additional_copy when provided."}, 400
+
+    user_id = int(g.current_user["id"])
+
+    with get_db_connection() as connection:
+        existing_book = fetch_book_by_isbn(connection, user_id, isbn)
+        if existing_book is not None:
+            current_copy_count = int(existing_book["copy_count"])
+            if duplicate_decision != "additional_copy":
+                return {
+                    "requires_confirmation": True,
+                    "book": serialize_book(existing_book),
+                    "message": (
+                        f"{existing_book['title']} is already in your catalogue with "
+                        f"{current_copy_count} {'copy' if current_copy_count == 1 else 'copies'}. "
+                        "Is this an additional copy?"
+                    ),
+                }
+
+            updated_book = increment_book_copy_count(connection, user_id, existing_book["id"])
+            response_payload = build_library_payload(g.current_user)
+            response_payload.update(
+                {
+                    "book": serialize_book(updated_book),
+                    "created": False,
+                    "additional_copy_added": True,
+                    "message": (
+                        f"Added another copy of {updated_book['title']}. "
+                        f"You now have {updated_book['copy_count']} "
+                        f"{'copy' if updated_book['copy_count'] == 1 else 'copies'}."
+                    ),
+                }
+            )
+            return response_payload
 
     try:
         metadata = fetch_book_from_open_library(isbn)
@@ -715,7 +798,7 @@ def scan_book():
     with get_db_connection() as connection:
         saved_book, created = upsert_book_record(
             connection,
-            int(g.current_user["id"]),
+            user_id,
             metadata,
             preserve_existing_stamped=True,
         )
